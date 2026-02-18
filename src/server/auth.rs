@@ -19,17 +19,23 @@ use tracing::{debug, info, warn};
 const WWW_AUTHENTICATE_VALUE: &str =
     "Bearer resource_metadata='/.well-known/oauth-protected-resource'";
 
+/// Default auth server base URL
+const DEFAULT_AUTH_SERVER: &str = "https://auth.surrealdb.com";
+
 /// Expected issuer for SurrealDB auth tokens
 const EXPECTED_ISSUER: &str = "https://auth.surrealdb.com/";
 
 /// Expected audience for SurrealDB MCP tokens
 const EXPECTED_AUDIENCE: &str = "https://mcp.surrealdb.com/";
 
-/// JWKS endpoint for SurrealDB auth
-const JWKS_ENDPOINT: &str = "https://auth.surrealdb.com/.well-known/jwks.json";
-
 /// JWKS cache duration (1 hour)
 const JWKS_CACHE_DURATION: Duration = Duration::from_secs(3600);
+
+/// OpenID Connect discovery configuration
+#[derive(Debug, Deserialize)]
+struct OpenIdConfig {
+    jwks_uri: String,
+}
 
 /// JWKS (JSON Web Key Set) structure
 #[derive(Debug, Serialize, Deserialize)]
@@ -99,27 +105,104 @@ impl CachedJwks {
 pub struct JwksManager {
     /// HTTP client for fetching JWKS
     client: reqwest::Client,
+    /// Auth server base URL used for OpenID Connect discovery
+    auth_server: String,
+    /// Resolved JWKS URI (cached after first resolution)
+    jwks_uri: Arc<RwLock<Option<String>>>,
     /// Temporary cache for JWKS
     cache: Arc<RwLock<Option<CachedJwks>>>,
 }
 
 impl JwksManager {
-    /// Create a new JWKS manager
-    pub fn new() -> Self {
+    /// Create a new JWKS manager with the given auth server URL.
+    /// The JWKS URI is resolved lazily from the OpenID Connect discovery document.
+    pub fn new(auth_server: String) -> Self {
         Self {
             client: reqwest::Client::new(),
+            auth_server,
+            jwks_uri: Arc::new(RwLock::new(None)),
             cache: Arc::new(RwLock::new(None)),
         }
     }
 
+    /// Resolve the JWKS URI from the OpenID Connect discovery document.
+    ///
+    /// Fetches `{auth_server}/.well-known/openid-configuration` and extracts the
+    /// `jwks_uri` field. Falls back to `{auth_server}/.well-known/jwks.json` if
+    /// the discovery endpoint is unavailable or returns an unexpected response.
+    async fn resolve_jwks_uri(&self) -> String {
+        // Fast path: return cached URI if already resolved (read lock)
+        {
+            let uri = self.jwks_uri.read().await;
+            if let Some(uri) = uri.as_ref() {
+                return uri.clone();
+            }
+        }
+
+        // Slow path: acquire write lock and resolve (double-checked)
+        let mut uri_lock = self.jwks_uri.write().await;
+        if let Some(uri) = uri_lock.as_ref() {
+            return uri.clone();
+        }
+
+        let base = self.auth_server.trim_end_matches('/');
+        let discovery_url = format!("{base}/.well-known/openid-configuration");
+        debug!("Fetching OpenID configuration from {}", discovery_url);
+
+        let resolved = match self.client.get(&discovery_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<OpenIdConfig>().await {
+                    Ok(config) => {
+                        info!(
+                            jwks_uri = %config.jwks_uri,
+                            "Resolved JWKS URI from OpenID Connect discovery"
+                        );
+                        config.jwks_uri
+                    }
+                    Err(e) => {
+                        let fallback = format!("{base}/.well-known/jwks.json");
+                        warn!(
+                            error = %e,
+                            fallback = %fallback,
+                            "Failed to parse OpenID configuration, falling back to default JWKS URI"
+                        );
+                        fallback
+                    }
+                }
+            }
+            Ok(response) => {
+                let fallback = format!("{base}/.well-known/jwks.json");
+                warn!(
+                    status = %response.status(),
+                    fallback = %fallback,
+                    "OpenID discovery returned error status, falling back to default JWKS URI"
+                );
+                fallback
+            }
+            Err(e) => {
+                let fallback = format!("{base}/.well-known/jwks.json");
+                warn!(
+                    error = %e,
+                    fallback = %fallback,
+                    "Failed to reach OpenID discovery endpoint, falling back to default JWKS URI"
+                );
+                fallback
+            }
+        };
+
+        *uri_lock = Some(resolved.clone());
+        resolved
+    }
+
     /// Fetch JWKS from the authentication endpoint
     async fn fetch_jwks(&self) -> Result<Jwks, String> {
+        let jwks_uri = self.resolve_jwks_uri().await;
         // Output debugging information
-        debug!("Fetching JWKS from {JWKS_ENDPOINT}");
-        // Fetch the JWKS from the endpoint
+        debug!("Fetching JWKS from {jwks_uri}");
+        // Fetch the JWKS from the resolved endpoint
         let response = self
             .client
-            .get(JWKS_ENDPOINT)
+            .get(&jwks_uri)
             .send()
             .await
             .map_err(|e| format!("Failed to fetch JWKS: {e}"))?;
@@ -232,7 +315,7 @@ impl Default for TokenValidationConfig {
             validate_expiration: true,
             validate_issued_at: true,
             clock_skew_seconds: 300, // 5 minutes
-            jwks_manager: Some(JwksManager::new()),
+            jwks_manager: Some(JwksManager::new(DEFAULT_AUTH_SERVER.to_string())),
         }
     }
 }
@@ -702,8 +785,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_jwks_manager_creation() {
-        let manager = JwksManager::new();
+        let manager = JwksManager::new(DEFAULT_AUTH_SERVER.to_string());
         assert!(manager.cache.read().await.is_none());
+        assert!(manager.jwks_uri.read().await.is_none());
     }
 
     #[tokio::test]
@@ -737,7 +821,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_jwks_fetching() {
-        let manager = JwksManager::new();
+        let manager = JwksManager::new(DEFAULT_AUTH_SERVER.to_string());
 
         // Test fetching JWKS from SurrealDB auth endpoint
         let result = manager.fetch_jwks().await;

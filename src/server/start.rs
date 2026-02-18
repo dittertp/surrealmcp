@@ -432,9 +432,15 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
         .layer(rate_limit_layer);
     // Add bearer authentication middleware if specified
     if !auth_disabled {
-        // Set the token validation config
+        // Normalize the auth server URL: ensure no trailing slash for consistency
+        let auth_server_base = auth_server.trim_end_matches('/').to_string();
+        // Derive the expected issuer from the auth server (OIDC convention: issuer = base URL + "/")
+        let expected_issuer = format!("{auth_server_base}/");
+        // Set the token validation config, pointing JWKS discovery at the configured auth server
         let token_config = TokenValidationConfig {
+            expected_issuer,
             expected_audience: auth_audience.clone(),
+            jwks_manager: Some(crate::server::auth::JwksManager::new(auth_server_base)),
             ..Default::default()
         };
         // Add bearer authentication middleware
