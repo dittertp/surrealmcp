@@ -344,11 +344,7 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
         "bearer_methods_supported": ["header"],
         "authorization_servers": [auth_server],
         "scopes_supported": ["openid", "profile", "email", "offline_access"],
-        "audience": [
-            "https://surrealdb.us.auth0.com/userinfo",
-            "https://surrealdb.us.auth0.com/api/v2/",
-            auth_audience,
-        ],
+        "audience": [auth_audience],
     }));
     // Create CORS layer for /.well-known endpoints
     let cors_layer = CorsLayer::new()
@@ -434,8 +430,8 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     if !auth_disabled {
         // Normalize the auth server URL: ensure no trailing slash for consistency
         let auth_server_base = auth_server.trim_end_matches('/').to_string();
-        // Derive the expected issuer from the auth server (OIDC convention: issuer = base URL + "/")
-        let expected_issuer = format!("{auth_server_base}/");
+        // Use the auth server base URL as issuer; trailing-slash variants are both accepted during validation
+        let expected_issuer = auth_server_base.clone();
         // Set the token validation config, pointing JWKS discovery at the configured auth server
         let token_config = TokenValidationConfig {
             expected_issuer,

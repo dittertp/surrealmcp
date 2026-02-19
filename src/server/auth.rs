@@ -393,8 +393,8 @@ async fn validate_jwe_token(
             header.enc
         ));
     }
-    // Validate the issuer from header
-    if header.iss != config.expected_issuer {
+    // Validate the issuer from header (normalize trailing slash for provider compatibility)
+    if header.iss.trim_end_matches('/') != config.expected_issuer.trim_end_matches('/') {
         return Err(format!(
             "Invalid issuer: expected {}, got {}",
             config.expected_issuer, header.iss
@@ -433,7 +433,10 @@ async fn validate_jwt_token(
     // Create validation configuration
     let mut validation = Validation::new(header.alg);
     validation.set_audience(&[&config.expected_audience]);
-    validation.set_issuer(&[&config.expected_issuer]);
+    // Accept issuer both with and without trailing slash for provider compatibility
+    let issuer_base = config.expected_issuer.trim_end_matches('/').to_string();
+    let issuer_with_slash = format!("{issuer_base}/");
+    validation.set_issuer(&[&issuer_base, &issuer_with_slash]);
     validation.set_required_spec_claims(&["iss", "aud", "exp", "iat", "sub"]);
     validation.leeway = config.clock_skew_seconds;
     validation.validate_aud = true;
