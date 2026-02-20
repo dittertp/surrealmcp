@@ -353,8 +353,15 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
         match client.get(&discovery_url).send().await {
             Ok(response) if response.status().is_success() => {
                 match response.json::<serde_json::Value>().await {
-                    Ok(metadata) => {
+                    Ok(mut metadata) => {
                         info!("Fetched AS discovery document from {discovery_url}");
+                        // Remove registration_endpoint: MCP clients (e.g. Gemini) attempt
+                        // Dynamic Client Registration (RFC 7591) when this field is present.
+                        // Most providers (incl. OneLogin) require auth for DCR, causing a
+                        // deadlock. Without this field clients fall back to PKCE flow.
+                        if let Some(obj) = metadata.as_object_mut() {
+                            obj.remove("registration_endpoint");
+                        }
                         metadata
                     }
                     Err(e) => {
