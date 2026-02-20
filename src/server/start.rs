@@ -39,6 +39,7 @@ pub struct ServerConfig {
     pub rate_limit_burst: u32,
     pub auth_server: String,
     pub auth_audience: String,
+    pub resource_url: Option<String>,
     pub cloud_access_token: Option<String>,
     pub cloud_refresh_token: Option<String>,
 }
@@ -318,6 +319,7 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
         rate_limit_burst,
         auth_server,
         auth_audience,
+        resource_url,
         cloud_access_token,
         cloud_refresh_token,
         ..
@@ -338,14 +340,19 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     let listener = TcpListener::bind(&bind_address)
         .await
         .map_err(|e| anyhow!("Failed to bind to address {bind_address}: {e}"))?;
-    // List servers for authentication discovery
-    let protected_resource = Json(json!({
-        "resource": server_url,
-        "bearer_methods_supported": ["header"],
-        "authorization_servers": [auth_server],
-        "scopes_supported": ["openid", "profile", "email"],
-        "audience": [auth_audience],
-    }));
+    // Build OAuth protected resource metadata.
+    // The "resource" field (RFC 8707 resource indicator) is only included when
+    // SURREAL_MCP_RESOURCE_URL is explicitly set, because some providers (e.g. OneLogin)
+    // reject requests that contain an unknown resource indicator.
+    let mut protected_resource_map = serde_json::Map::new();
+    if let Some(ref resource) = resource_url {
+        protected_resource_map.insert("resource".to_string(), json!(resource));
+    }
+    protected_resource_map.insert("bearer_methods_supported".to_string(), json!(["header"]));
+    protected_resource_map.insert("authorization_servers".to_string(), json!([auth_server]));
+    protected_resource_map.insert("scopes_supported".to_string(), json!(["openid", "profile", "email"]));
+    protected_resource_map.insert("audience".to_string(), json!([auth_audience]));
+    let protected_resource = Json(serde_json::Value::Object(protected_resource_map));
     // Create CORS layer for /.well-known endpoints
     let cors_layer = CorsLayer::new()
         .allow_origin(tower_http::cors::Any)

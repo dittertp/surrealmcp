@@ -64,6 +64,12 @@ pub enum Commands {
             default_value = "https://mcp.surrealdb.com/"
         )]
         auth_audience: String,
+        /// Resource identifier advertised in OAuth protected resource metadata.
+        /// If not set, the resource field is omitted from the metadata (useful
+        /// for providers that do not support RFC 8707 resource indicators, e.g. OneLogin).
+        /// Defaults to SURREAL_MCP_SERVER_URL when set explicitly.
+        #[arg(long, env = "SURREAL_MCP_RESOURCE_URL")]
+        resource_url: Option<String>,
         /// SurrealDB Cloud access token (used instead of fetching tokens)
         #[arg(long, env = "SURREAL_MCP_CLOUD_ACCESS_TOKEN")]
         cloud_access_token: Option<String>,
