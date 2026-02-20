@@ -340,16 +340,52 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     let listener = TcpListener::bind(&bind_address)
         .await
         .map_err(|e| anyhow!("Failed to bind to address {bind_address}: {e}"))?;
+    // Fetch the authorization server's OpenID Connect discovery document at startup.
+    // This is served at /.well-known/oauth-authorization-server so that MCP clients
+    // which implement RFC 8414 (and not OpenID Connect discovery) can find the real
+    // authorization/token endpoints of the configured IdP (e.g. OneLogin only serves
+    // /.well-known/openid-configuration, not /.well-known/oauth-authorization-server).
+    let auth_server_base = auth_server.trim_end_matches('/').to_string();
+    let as_metadata: serde_json::Value = {
+        let discovery_url = format!("{auth_server_base}/.well-known/openid-configuration");
+        debug!("Fetching AS discovery document from {discovery_url}");
+        let client = reqwest::Client::new();
+        match client.get(&discovery_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(metadata) => {
+                        info!("Fetched AS discovery document from {discovery_url}");
+                        metadata
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse AS discovery document: {e}, using empty metadata");
+                        json!({})
+                    }
+                }
+            }
+            Ok(response) => {
+                warn!("AS discovery endpoint returned {}: using empty metadata", response.status());
+                json!({})
+            }
+            Err(e) => {
+                warn!("Failed to fetch AS discovery document: {e}, using empty metadata");
+                json!({})
+            }
+        }
+    };
+    let as_metadata_response = Json(as_metadata);
     // Build OAuth protected resource metadata.
     // The "resource" field (RFC 8707 resource indicator) is only included when
     // SURREAL_MCP_RESOURCE_URL is explicitly set, because some providers (e.g. OneLogin)
     // reject requests that contain an unknown resource indicator.
+    // "authorization_servers" points to the MCP server itself so that clients look for
+    // /.well-known/oauth-authorization-server here (where we proxy the IdP's discovery doc).
     let mut protected_resource_map = serde_json::Map::new();
     if let Some(ref resource) = resource_url {
         protected_resource_map.insert("resource".to_string(), json!(resource));
     }
     protected_resource_map.insert("bearer_methods_supported".to_string(), json!(["header"]));
-    protected_resource_map.insert("authorization_servers".to_string(), json!([auth_server]));
+    protected_resource_map.insert("authorization_servers".to_string(), json!([server_url]));
     protected_resource_map.insert("scopes_supported".to_string(), json!(["openid", "profile", "email"]));
     protected_resource_map.insert("audience".to_string(), json!([auth_audience]));
     let protected_resource = Json(serde_json::Value::Object(protected_resource_map));
@@ -365,6 +401,7 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     // Create a service for /.well-known endpoints with CORS
     let well_known_service = Router::new()
         .route("/oauth-protected-resource", get(protected_resource))
+        .route("/oauth-authorization-server", get(as_metadata_response))
         .layer(cors_layer);
     // Create a session manager for the HTTP server
     let session_manager = Arc::new(LocalSessionManager::default());
