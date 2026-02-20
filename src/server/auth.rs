@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 
 /// WWW-Authenticate value for HTTP 401 responses
 const WWW_AUTHENTICATE_VALUE: &str =
-    "Bearer resource_metadata='/.well-known/oauth-protected-resource'";
+    "Bearer resource_metadata='/.well-known/oauth-protected-resource', scope=\"openid profile email\"";
 
 /// Default auth server base URL
 const DEFAULT_AUTH_SERVER: &str = "https://auth.surrealdb.com";
