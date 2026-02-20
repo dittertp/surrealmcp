@@ -343,7 +343,7 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
         "resource": server_url,
         "bearer_methods_supported": ["header"],
         "authorization_servers": [auth_server],
-        "scopes_supported": ["openid", "profile", "email", "offline_access"],
+        "scopes_supported": ["openid", "profile", "email"],
         "audience": [auth_audience],
     }));
     // Create CORS layer for /.well-known endpoints
